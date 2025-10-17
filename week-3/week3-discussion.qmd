@@ -1,0 +1,94 @@
+---
+title: "Week 3: Discussion Section: Practice vector operations"
+format: html
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+Discussion here: https://eds-223-geospatial.github.io/course-materials/discussions/week3-discussion.html
+
+# 1. Get Started
+
+```{r}
+library(here)
+library(tidyverse)
+library(sf)
+library(tmap)
+
+sb_protected_areas <- st_read(here("week-3", "data", "cpad_super_units_sb.shp")) %>% 
+  st_make_valid() %>% 
+  st_transform("ESRI:102009")
+
+sb_city_boundaries <- st_read(here("week-3", "data", "sb_city_boundaries_2003.shp")) %>% 
+  st_make_valid() %>% 
+  st_transform("ESRI:102009")
+
+sb_county_boundary <- st_read(here("week-3", "data", "sb_county_boundary_2020.shp")) %>% 
+  st_make_valid() %>% 
+  st_transform("ESRI:102009")
+
+aves <- st_read(here("week-3", "data", "aves_observations_2020_2024.shp")) %>% 
+  st_make_valid() %>% 
+  st_transform("ESRI:102009")
+```
+
+# 2. Find bird observations within PAs in Santa Barbara County
+
+Find how many bird observations are within protected areas in Santa Barbara County and show how your output differs with a spatial subset versus a spatial join
+
+```{r}
+# let's do the subset
+aves_PA_subset <- sb_protected_areas[aves, ] # Subset
+## similar to st_filter(x= aves, y = sb_protected_areas, .predicate = st_within)
+
+nrow(aves_PA_subset) # Check number of rows: 35
+
+tm_shape(sb_county_boundary) +
+  tm_fill() +
+  tm_shape(sb_protected_areas) +
+    tm_borders(lwd = 1, col = "#fb8500") +
+    tm_fill(col = "#fb8500", alpha = 0.2) +
+  tm_shape(aves_PA_subset) +
+    tm_dots(col = "#023047")
+```
+
+Now let's do the join
+
+```{r}
+aves_PA_join <- st_join(aves, sb_protected_areas) # default: `st_intersects` 
+
+nrow(aves_PA_join) # Check number of rows
+
+tm_shape(sb_county_boundary) +
+  tm_fill() +
+  tm_shape(sb_protected_areas) +
+    tm_borders(lwd = 1, col = "#fb8500") +
+    tm_fill(col = "#fb8500", alpha = 0.2) +
+  tm_shape(aves_PA_join) +
+    tm_dots(col = "#023047")
+```
+
+Make a 5 km buffer around the protected areas and subset buffered geometries to only those with bird observations
+
+```{r}
+st_crs(sb_protected_areas)$units # Check if units are in meters
+
+PA_buffer_5km <- st_buffer(sb_protected_areas, dist = 5000) # Create 5000 m buffer around PAs
+
+aves_buffer_subset <- PA_buffer_5km[aves, ] # Subset
+## or use st_filter
+
+nrow(aves_buffer_subset) # Check number of rows
+
+tm_shape(sb_county_boundary) +
+  tm_fill() +
+  tm_shape(sb_protected_areas) +
+    tm_borders(lwd = 1, col = "#fb8500") +
+    tm_fill(col = "#fb8500", alpha = 0.2) +
+  tm_shape(aves_buffer_subset) +
+  tm_dots(col = "#023047")
+```
+
+
+
