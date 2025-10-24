@@ -1,0 +1,182 @@
+---
+title: "Week 4: Practice raster manipulations"
+format: html
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+Discussion here: https://eds-223-geospatial.github.io/course-materials/discussions/week4-discussion.html
+
+# 1. Get Started
+
+```{r}
+library(tidyverse)
+library(spData)
+library(spDataLarge)
+library(sf)
+library(stars)
+library(terra)
+
+# load in data
+# Digital elevation model (DEM) of Mt. Mongón, Perú, obtained from spDataLarge
+dem <- terra::rast(system.file("raster/dem.tif", package = "spDataLarge"))
+# Landsat image of Zion National Park, obtained from spDataLarge
+landsat <- terra::rast(system.file("raster/landsat.tif", package = "spDataLarge"))
+# SRTM elevation of Zion National Park, obtained from spDataLarge
+srtm <- terra::rast(system.file("raster/srtm.tif", package = "spDataLarge"))
+```
+
+# 2. Explore elevation at Mt. Mongón, Perú
+
+Make a boxplot and histogram of elevation at Mt. Mongón, Perú
+
+```{r}
+hist(dem,
+     main = "Digital Elevation Model Distribution",
+     xlab = "Value")
+
+boxplot(dem,
+        main = "Digital Elevation Model Distribution",
+        ylab = "Value")
+```
+
+## Reclassify dem and compute the mean for the three classes:
+Low, where elevation is less than 300
+Medium
+High, where elevation is greater than 500
+
+```{r}
+# Define a reclassification matrix
+rcl <- matrix(c(-Inf, 300, 0, # values -Inf to 300 = 0
+                300, 500, 1,  # values 300 to 500 = 1
+                500, Inf, 2), # values 500 to Inf = 2
+              ncol = 3, byrow = TRUE)
+
+# Apply the matrix to reclassify the raster, making all cells 0 or 1 or 2
+dem_rcl <- terra::classify(dem, rcl = rcl)
+
+# Assign labels to the numerical categories
+levels(dem_rcl) <- tibble::tibble(id = 0:2, 
+                                  cats = c("low", "medium", "high"))
+
+# Calculate mean elevation for each category using original DEM values
+elevation_mean <- terra::zonal(dem, dem_rcl, fun = "mean")
+elevation_mean
+```
+
+
+# 3. Explore NDVI and NDWI at Zion National Park
+
+Apply a scale factor and offset for all grid cells
+
+Each floating point pixel has an offset applied and then multiplied by a gain to bring the value into the 16-bit integer (or unsigned integer) range. These values are referred to as scaled integers. To allow the user to get the data back to its original floating point value, a scale factor and offset are provided for each band.
+
+scale factor: 0.0000275
+
+offset: 	-0.2
+
+correct the scale across all grid cells and then apply the ndvi and ndwi functions at each grid cell
+
+3a Calculate the Normalized Difference Vegetation Index (NDVI) at Zion National Park
+3b Calculate the Normalized Difference Water Index (NDWI) at Zion National Park
+3c Find a correlation between NDVI and NDWI at Zion National Park
+
+Let's start with correcting and scaling
+
+Use app() to apply a function across all layers
+
+```{r}
+scale_factor <- 0.0000275
+offset <- 0.2 # set to a positive so the map will run, but should be negative
+
+# make a function to multiply by scale and add the offset
+scale_function <- function(x) {
+  x * scale_factor + offset
+}
+
+landsat_scaled <- terra::app(landsat, fun = scale_function) # app to apply to everything
+```
+
+Now that it is corrected, let's explore these rasters
+
+```{r}
+# test class of raster object
+class(landsat_scaled)
+
+nlyr(landsat_scaled) # test number of layers in raster object
+# 4 layers
+
+# look at the names of the layers
+names(landsat_scaled)
+# "landsat_1" "landsat_2" "landsat_3" "landsat_4"
+```
+Band 1 is blue, 2 is green, 3 is red, 4 is nir
+
+Next, let's build an ndwi and ndvi function
+
+```{r}
+ndwi_fun <- function(green, nir){
+    (green - nir)/(green + nir)
+}
+
+ndvi_fun <- function(nir, red){
+  (nir - red)/(nir + red)
+}
+```
+
+and apply them
+
+Use lapp() to apply a custom function that takes multiple layers as input
+
+```{r}
+# lapp is like lapply
+
+ndwi_rast <- terra::lapp(landsat_scaled[[c(2, 4)]], #2 = green, nir = 4
+                         fun = ndwi_fun) 
+
+ndvi_rast <- terra::lapp(landsat_scaled[[c(4, 3)]], #3 = red, nir = 4
+                         fun = ndvi_fun)
+
+plot(ndwi_rast,
+     main = "Zion National Park NDWI")
+
+
+plot(ndvi_rast,
+     main = "Zion National Park NDVI")
+```
+
+Find a correlation between NDVI and NDWI at Zion National Park
+
+```{r}
+#I need to stack the 2 rasters in one object
+
+combine <- c(ndvi_rast, ndwi_rast) # Stack rasters
+
+plot(combine, main = c("NDVI", "NDWI")) # Plot
+
+# Calculate correlation between raster layers 
+terra::layerCor(combine, fun = cor)
+```
+
+# 4. Change resolution of elevation at Zion National Park
+
+Use all the methods available to change the resolution of elevation at Zion National Park to 0.01 by 0.01 degrees
+
+Note: The srtm raster has a resolution of 0.00083 by 0.00083 degrees
+
+```{r}
+rast_template <- terra::rast(terra::ext(srtm), res = 0.01) # Create empty template
+
+srtm_resampl1 <- terra::resample(srtm, y = rast_template, method = "bilinear")
+srtm_resampl2 <- terra::resample(srtm, y = rast_template, method = "near")
+srtm_resampl3 <- terra::resample(srtm, y = rast_template, method = "cubic")
+srtm_resampl4 <- terra::resample(srtm, y = rast_template, method = "cubicspline")
+srtm_resampl5 <- terra::resample(srtm, y = rast_template, method = "lanczos")
+
+srtm_resampl_all <- c(srtm_resampl1, srtm_resampl2, srtm_resampl3, srtm_resampl4, srtm_resampl5)
+labs <- c("Bilinear", "Near", "Cubic", "Cubic Spline", "Lanczos")
+
+plot(srtm_resampl_all, main = labs)
+```
+
