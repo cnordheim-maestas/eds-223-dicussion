@@ -1,0 +1,222 @@
+---
+title: "Week 7: Practice function making with rasters"
+format: html
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+Discussion here: https://eds-223-geospatial.github.io/course-materials/discussions/week7-discussion.html
+
+```{r}
+library(tidyverse)
+library(sf)
+library(terra)
+library(tmap)
+library(patchwork)
+```
+
+# 1. Get Started
+
+```{r}
+magpie <- read_csv(here::here("week-7", "data", "magpie_obvs.csv"))
+tule_elk <- read_csv(here::here("week-7","data", "tule_elk_obvs.csv"))
+
+bioclim_dir <- here::here("week-7", "data", "climate", "wc2.1_2.5m")
+bioclim <- list.files(bioclim_dir, pattern = glob2rx("*.tif$"), full.names = TRUE)
+bioclim_sort <- bioclim[
+  # Sort filepaths based on numeric suffix
+  order(
+    # Extract numeric suffix of filenames and convert to numeric
+    as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", bioclim))
+    )
+  ]
+bioclim_rast <- rast(bioclim_sort)
+```
+
+# 2. Name raster layers
+
+Update the bioclim_rast layer names to match the Bioclimatic variables using names()
+
+```{r}
+names(bioclim_rast) # yikes
+names(bioclim) # null
+
+variables <- c("annualMeanTemp", "meanDiurnalRange", "isothermality", "tempSeasonality", "maxTempWarmMonth", "maxTempColdMonth", "tempAnnualRange", "meanTempWetQ", "meanTempDryQ", "meanTempWarmQ", "meanTempColdQ", "annualPrecip", "precipWetMonth", "precipDryMonth", "precipSeasonality", "precipWetQ", "precipDryQ", "precipWarmQ", "precipColdQ")
+names(bioclim_rast) <- variables
+```
+
+# 3. Find geographic extent of species occurrence and crop raster
+
+Use st_as_sf to convert and find the geographic extent of species occurrence data magpie using st_bbox()
+Crop bioclim_rast to match the extent of species occurrence data magpie
+
+```{r}
+names(magpie)
+magpie_sf <- magpie %>% 
+  rename(long = longitude, # prettier names
+         lat = latitude) %>% # prettier names
+  drop_na(long, lat) %>% # drop long ones
+  st_as_sf(coords = c("long", "lat"), crs = 4326) # make sf
+
+# Obtain geographic extent/bounding box of species occurrences
+magpie_bbox <- st_bbox(magpie_sf)
+
+# Crop raster to match geographic extent of species occurrences
+bioclim_crop <- crop(bioclim_rast, magpie_bbox)
+```
+
+4. Extract points from species occurrence
+
+Extract points from the cropped bioclim_rast for each occurrence in magpie
+
+```{r}
+# Extract points from raster for all species occurrences
+bioClim_pts <- as_tibble(terra::extract(bioclim_crop, magpie_sf)) # function terra::extract!
+```
+
+5. Create background values and extract points
+
+Create “background values” by generating random sample points from the cropped bioclim_rast
+Extract points from cropped bioclim_rast for the background values
+
+This is common in species distribution modeling (e.g., MaxEnt or GLMs) where you need pseudo-absence or background points
+
+```{r}
+# Generate random sample points from raster
+random_pts <- spatSample( # terra function that randomly samples cells from a raster
+  bioclim_crop[["annualMeanTemp"]], # selects one raster layer (the annual mean temperature layer) from a multilayer raster object called bioclim_crop
+                         na.rm = TRUE, # Random sample non-NA cells
+                         size = (nrow(magpie) * 2), # creating a sample size based on the magpie, I want twice as many rows as the magpie
+                         as.points = TRUE) %>% # Return SpatVector
+  st_as_sf() # make it spatial
+
+# Extract points from raster for background values
+bioClim_random_pts <- as_tibble(terra::extract(bioclim_crop, random_pts)) # taking the random spatial points we just generated and extracting the environmental values at those locations from the raster stack
+```
+
+6. Plot species climate niche
+
+```{r}
+map_1 <- tm_shape(bioclim_crop[["annualPrecip"]]) +
+  tm_raster(col.scale = tm_scale_continuous(values = "Blues"), 
+            col.legend = tm_legend(title = "Annual precipitation")) +
+  tm_shape(magpie_sf) +
+  tm_dots(fill = "#3a5a40", size = 0.15) +
+  tm_layout(legend.position = tm_pos_in("center", "bottom"),
+            legend.orientation = "landscape",
+            legend.bg.color = "white")
+
+map_2 <- tm_shape(bioclim_crop[["annualMeanTemp"]]) +
+  tm_raster(col.scale = tm_scale_continuous(values = "-RdYlBu"), 
+            col.legend = tm_legend(title = "Annual mean temperature")) +
+  tm_shape(magpie_sf) +
+  tm_dots(fill = "#3a5a40", size = 0.15) +
+  tm_layout(legend.position = tm_pos_in("center", "bottom"),
+            legend.orientation = "landscape",
+            legend.bg.color = "white")
+
+tmap_arrange(map_1, map_2)
+```
+
+```{r}
+plot_1 <- ggplot(data = bioClim_pts, aes(x = annualPrecip, y = annualMeanTemp)) +
+  geom_point(shape = 16, color = "#3a5a40") +
+  labs(x = "Annual precipitation",
+       y = "Annual mean temperature", 
+       title = "Species climate niche") +
+  theme_bw()
+
+plot_2 <- ggplot(data = bioClim_random_pts, aes(x = annualPrecip, y = annualMeanTemp)) +
+  geom_point(shape = 16) +
+  labs(x = "Annual precipitation",
+       y = element_blank(), 
+       title = "Background climate") +
+  theme_bw()
+
+plot_1 + plot_2
+```
+
+
+7. Create generalizable workflow and apply
+
+Modify previous steps into a generalizable workflow for other species occurrence data
+Try your new function with species occurrence data tule_elk
+
+```{r}
+climate_envelope <- function(clim_rast, # need to input a climate raster
+                             clim_var1, # specifically the name of the layer 
+                             clim_var2, # climate variable 2
+                             occurences, # df with occurrences of the species and a column "long" and "lat" wiht longitude and latitude
+                             species_name){ # just the name of the species, literally just a string, for storing the plot and for the ggplot later on
+  
+  # clean the name of the species snake_case
+  species_name_lower <- species_name %>% 
+    str_to_lower() %>% 
+    str_replace_all(" ", "_")
+  
+  
+  occurences_sf <- occurences %>% 
+    rename(long = longitude, # ensure in your input there is a column long
+           lat = latitude) %>% # ensure in your input there is a column lat
+    drop_na(long) %>% # no na's in the coordinates
+    st_as_sf(coords = c("long", "lat"), crs = 4326) # make it spatial
+
+#....................crop to the occurrences and pull the points.....................
+  # now we make the bbox to prepare to crop
+  occurences_bbox <- st_bbox(occurences_sf) # make it a bbox
+  
+  # now crop to the bbox
+  clim_crop <- crop(clim_rast, occurences_bbox) # crop the climate raster to the bbox
+
+  # pull the points from the cropped dataframe 
+  clim_pts <- as_tibble(extract(clim_crop, occurences_sf)) 
+  
+#.............randomly sample for background climate.............
+  random_pts <- spatSample(clim_rast[[clim_var1]],
+                           na.rm = TRUE,
+                           size = (nrow(occurences) * 2),
+                           as.points = TRUE) %>%
+    st_as_sf()
+
+  clim_random_pts <- as_tibble(terra::extract(clim_crop, random_pts))
+
+#.........................build the maps......................... 
+  map_1 <- tm_shape(clim_crop[[clim_var1]]) +
+    tm_raster(col.scale = tm_scale_continuous(values = "Blues")) +
+    tm_shape(occurences_sf) +
+    tm_dots(fill = "#3a5a40", size = 0.15) +
+    tm_layout(legend.position = tm_pos_in("center", "bottom"),
+              legend.orientation = "landscape",
+              legend.bg.color = "white")
+
+  map_2 <- tm_shape(clim_crop[[clim_var2]]) +
+    tm_raster(col.scale = tm_scale_continuous(values = "-RdYlBu")) +
+    tm_shape(occurences_sf) +
+    tm_dots(fill = "#3a5a40", size = 0.15) +
+    tm_layout(legend.position = tm_pos_in("center", "bottom"),
+              legend.orientation = "landscape",
+              legend.bg.color = "white")
+  
+  plot_1 <- ggplot(data = clim_pts, aes_string(x = clim_var1, y = clim_var2)) +
+    geom_point(shape = 16, color = "#3a5a40") +
+    labs(title = paste("Species climate niche of", str_to_sentence(species_name))) +
+    theme_bw()
+  
+  plot_2 <- ggplot(data = clim_random_pts, aes_string(x = clim_var1, y = clim_var2)) +
+    geom_point(shape = 16) +
+    labs(y = element_blank(), 
+         title = paste("Background climate of", str_to_sentence(species_name))) +
+    theme_bw()
+  
+  assign(paste0(species_name_lower, "_map_1"), map_1, envir = .GlobalEnv)
+  assign(paste0(species_name_lower, "_map_2"), map_2, envir = .GlobalEnv)
+  assign(paste0(species_name_lower, "_plot_1"), plot_1, envir = .GlobalEnv)
+  assign(paste0(species_name_lower, "_plot_2"), plot_2, envir = .GlobalEnv)
+  
+}
+```
+
+
+
+
